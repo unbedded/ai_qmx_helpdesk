@@ -1,0 +1,25 @@
+
+{
+  "permissionMode": "ask",
+  "autoApprove": {
+    "runCommand": [
+      "pytest -q",
+      "ruff format",
+      "ruff check --fix",
+      "mypy .",
+      "python tools/yaml_to_py.py"
+    ],
+    "editFiles": [
+      "CLAUDE.md",
+      ".claude/**",
+      "src/**",
+      "tests/**",
+      "tools/**",
+      "pyproject.toml",
+      "requirements.txt"
+    ]
+  },
+  "env": {
+    "PYTHONPATH": "src"
+  }
+}
