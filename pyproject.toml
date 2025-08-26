@@ -1,0 +1,13 @@
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[tool.ruff]
+# If your interpreter isn't 3.13, change to your real version (e.g., "py311").
+target-version = "py313"
+line-length = 100
+
+[tool.mypy]
+# If your interpreter isn't 3.13, change to your real version (e.g., "3.11").
+python_version = "3.13"
+ignore_missing_imports = true
+strict = true

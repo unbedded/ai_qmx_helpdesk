@@ -205,3 +205,17 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+# Local data & indexes
+data/
+rag.db/
+rag.db/**
+
+# Vector/embedding artifacts
+*.faiss
+*.npy
+*.pkl
+
+# Python junk
+__pycache__/
+*.pyc
+.cache/

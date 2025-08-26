@@ -1,0 +1,20 @@
+pytest>=8.0
+ruff>=0.5
+mypy>=1.10
+PyYAML>=6.0
+types-PyYAML>=6.0.12.20240808
+
+# LangChain dependencies for RAG database functionality
+langchain>=0.1.0
+langchain-community>=0.0.20
+langchain-core>=0.1.0
+langchain-openai>=0.1.0
+langchain-anthropic>=0.1.0
+langchain-huggingface>=0.0.1
+
+# Vector store backends
+faiss-cpu>=1.7.0
+chromadb>=0.4.0
+
+# Text processing
+pypdf>=4.0.0
