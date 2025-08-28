@@ -33,6 +33,11 @@ except ImportError:
 from . import rag_db
 
 
+def get_default_db_path(provider: str) -> str:
+    """Generate default database path based on provider."""
+    return f"{provider}_rag.db"
+
+
 # STEP_1: Setup logging and constants
 _logger = logging.getLogger(__name__)
 
@@ -45,6 +50,7 @@ DEFAULT_CONFIG = {
     "split": {"chunk_size": 1000, "chunk_overlap": 200},
     "embed": {"provider": "toy", "model": "default", "batch_size": 64},
     "retriever": {"k": 5},
+    "llm": {"provider": "openai", "model": "gpt-4o-mini", "temperature": 0.1, "max_tokens": 1000},
 }
 
 
@@ -170,8 +176,8 @@ class RagCLI:
 
     def cmd_embed(self, args: argparse.Namespace) -> int:
         """Generate embeddings for ingested documents."""
-        db_path = args.db or self.cfg["db"]["path"]
-        provider = args.provider or self.cfg["embed"]["provider"]
+        provider = args.provider  # Now required
+        db_path = args.db or get_default_db_path(provider)
         model = args.model or self.cfg["embed"].get("model", "default")
         batch_size = args.batch_size or self.cfg["embed"]["batch_size"]
         backend = args.backend or self.cfg["db"]["backend"]
@@ -226,7 +232,8 @@ class RagCLI:
 
     def cmd_query(self, args: argparse.Namespace) -> int:
         """Query the RAG database."""
-        db_path = args.db or self.cfg["db"]["path"]
+        provider = args.provider  # Now required
+        db_path = get_default_db_path(provider)
         query = args.q
         k = args.k or self.cfg["retriever"]["k"]
 
@@ -347,18 +354,101 @@ class RagCLI:
 
     def cmd_inspect(self, args: argparse.Namespace) -> int:
         """Inspect database status or query results."""
-        # If no query provided, show database status
+        # If no query provided, show database status (default database)
         if not args.q:
+            # For database inspection, use default database
+            args.db = "rag.db"  # Set default for sanity check
             return self.cmd_sanity_check(args)
 
-        # If sanity flag is used, run sanity check
-        if args.sanity:
-            return self.cmd_sanity_check(args)
+        # Query inspection requires provider
+        if not args.provider:
+            print("Error: --provider is required when inspecting query results", file=sys.stderr)
+            return 1
 
         # Set detailed output flags for query inspection
         args.show_paths = True
         args.show_chunks = True
         return self.cmd_query(args)
+
+    def cmd_answer(self, args: argparse.Namespace) -> int:
+        """Generate natural language answer using full RAG pipeline."""
+        from . import nlp
+
+        provider = args.provider  # Now required
+        db_path = get_default_db_path(provider)
+
+        # Validate database exists
+        if not Path(db_path).exists():
+            print(f"Error: Database {db_path} does not exist. Run 'init' first.", file=sys.stderr)
+            return 1
+
+        # Load configuration
+        cfg = self._load_config({})
+
+        # Override embed config to match provider
+        embed_cfg = cfg.get("embed", DEFAULT_CONFIG["embed"]).copy()
+        embed_cfg["provider"] = provider
+        # For OpenAI, we need to use the same embedding model that was used during embed
+        if provider == "openai":
+            embed_cfg["model"] = "text-embedding-3-small"  # Must match embed step
+        cfg["embed"] = embed_cfg
+
+        # Override LLM config with CLI args if provided
+        llm_cfg = cfg.get("llm", DEFAULT_CONFIG["llm"]).copy()
+        if args.provider:
+            llm_cfg["provider"] = args.provider
+        if args.model:
+            llm_cfg["model"] = args.model
+        if args.temperature is not None:
+            llm_cfg["temperature"] = args.temperature
+        if args.max_tokens:
+            llm_cfg["max_tokens"] = args.max_tokens
+
+        cfg["llm"] = llm_cfg
+
+        # Get number of chunks to retrieve
+        k = args.k or cfg.get("retriever", {}).get("k", 5)
+
+        print(
+            f"🤖 Generating answer using {llm_cfg['provider']} ({llm_cfg.get('model', 'default')})"
+        )
+        print(f"📚 Retrieving top {k} relevant chunks...")
+
+        try:
+            # Run complete RAG pipeline
+            result = nlp.answer_question(args.q, db_path, cfg, k=k)
+
+            if args.json:
+                # JSON output
+                print(json.dumps(result, indent=2))
+            else:
+                # Human-readable output
+                print(f"\n❓ Question: {result['question']}")
+                print(
+                    f"🔍 Retrieved {result.get('retrieval', {}).get('chunks_retrieved', 0)} chunks, used {result.get('chunks_used', 0)}"
+                )
+                print(
+                    f"🤖 Provider: {result.get('provider', 'unknown')} ({result.get('model', 'unknown')})"
+                )
+
+                if "error" in result:
+                    print(f"❌ Error: {result['error']}", file=sys.stderr)
+                    return 1
+
+                print("\n💬 Answer:")
+                print("-" * 60)
+                print(result["answer"])
+                print("-" * 60)
+
+                # Show context info if verbose
+                if args.verbose:
+                    print(f"\n📊 Context length: {result.get('context_length', 0)} chars")
+
+            return 0
+
+        except Exception as e:
+            print(f"Error: Failed to generate answer: {e}", file=sys.stderr)
+            return 1
 
     def cmd_sanity_check(self, args: argparse.Namespace) -> int:
         """Run comprehensive database sanity check."""
@@ -490,7 +580,46 @@ def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="qmx-helpdesk",
         description="🤖 QMX Helpdesk RAG Database CLI\n\nIngest documents, generate embeddings, and query with semantic search.",
-        epilog="Complete Workflow:\n"
+        epilog="Commands Tree Structure:\n"
+        "qmx-helpdesk\n"
+        "├── --debug-exec                  # Show execution method and package location\n"
+        "└── ragdb                         # RAG database operations\n"
+        "    ├── init                      # 🗄️  Initialize new RAG database\n"
+        "    │   └── --db PATH             # Database path (default: rag.db)\n"
+        "    ├── ingest                    # 📄 Ingest documents into database\n"
+        "    │   ├── --db PATH             # Database path (default: rag.db)\n"
+        "    │   ├── --dir DIRECTORY       # Directory containing documents\n"
+        "    │   ├── --include PATTERNS    # Include glob patterns (default: *.txt,*.md)\n"
+        "    │   ├── --exclude PATTERNS    # Exclude glob patterns\n"
+        "    │   ├── --chunk-size N        # Chunk size (default: 1000)\n"
+        "    │   └── --chunk-overlap N     # Chunk overlap (default: 200)\n"
+        "    ├── embed                     # 🧮 Generate vector embeddings\n"
+        "    │   ├── --db PATH             # Database path (auto-generated from provider)\n"
+        "    │   ├── --provider PROVIDER   # Embedding provider (required: toy|huggingface|openai)\n"
+        "    │   ├── --model MODEL         # Model name (provider-specific)\n"
+        "    │   ├── --batch-size N        # Batch size (default: 64)\n"
+        "    │   └── --backend BACKEND     # Vector backend (default: chroma)\n"
+        "    ├── query                     # 🔍 Search documents with natural language\n"
+        "    │   ├── --q TEXT              # Query text (natural language, required)\n"
+        "    │   ├── --k N                 # Number of results (default: 5)\n"
+        "    │   ├── --provider PROVIDER   # Embedding provider (required: toy|huggingface|openai)\n"
+        "    │   ├── --json                # Output as JSON instead of table\n"
+        "    │   └── --show-chunks         # Show chunk content with results\n"
+        "    ├── inspect                   # 🔬 Inspect database status or query results\n"
+        "    │   ├── --q TEXT              # Query to inspect (optional - shows DB status if omitted)\n"
+        "    │   ├── --provider PROVIDER   # Embedding provider (required for query inspection)\n"
+        "    │   └── --show-chunks         # Show chunk content\n"
+        "    ├── answer                    # 🤖 Generate natural language answers using RAG\n"
+        "    │   ├── --q TEXT              # Question (natural language, required)\n"
+        "    │   ├── --k N                 # Number of chunks to retrieve (default: 5)\n"
+        "    │   ├── --provider PROVIDER   # Provider for both embeddings and LLM (required: openai|toy)\n"
+        "    │   ├── --model MODEL         # LLM model name\n"
+        "    │   ├── --temperature TEMP    # Temperature (0.0-1.0, default: 0.1)\n"
+        "    │   ├── --max-tokens N        # Maximum tokens in response (default: 1000)\n"
+        "    │   ├── --json                # Output as JSON\n"
+        "    │   └── --verbose             # Show additional context info\n"
+        "    └── tune                      # ⚙️  Tune RAG parameters (coming soon)\n\n"
+        "Complete Workflow:\n"
         "  # 1. Initialize database\n"
         "  qmx ragdb init --db my_docs.db\n\n"
         "  # 2. Ingest documents\n"
@@ -498,7 +627,9 @@ def create_parser() -> argparse.ArgumentParser:
         "  # 3. Generate embeddings\n"
         "  qmx ragdb embed --db my_docs.db --provider toy\n\n"
         "  # 4. Query documents\n"
-        "  qmx ragdb query --db my_docs.db --q 'question' --provider toy\n\n"
+        "  qmx ragdb query --provider toy --q 'question'\n\n"
+        "  # 5. Get AI answers\n"
+        "  qmx ragdb answer --provider openai --q 'What is QMX?'\n\n"
         "Command Help:\n"
         "  qmx ragdb -h              # All ragdb commands\n"
         "  qmx ragdb <command> -h    # Specific command help\n\n"
@@ -530,7 +661,7 @@ def create_parser() -> argparse.ArgumentParser:
     ragdb_subparsers = ragdb_parser.add_subparsers(
         dest="ragdb_command",
         help="RAG database commands",
-        metavar="{init,ingest,embed,query,inspect,tune}",
+        metavar="{init,ingest,embed,query,inspect,answer,tune}",
     )
 
     # init command
@@ -578,11 +709,14 @@ def create_parser() -> argparse.ArgumentParser:
         "  huggingface - High quality open-source models\n"
         "  openai      - OpenAI's embedding models (requires API key)",
     )
-    embed_parser.add_argument("--db", help="Database path (default: rag.db)", metavar="PATH")
+    embed_parser.add_argument(
+        "--db", help="Database path (default: auto-generated from provider)", metavar="PATH"
+    )
     embed_parser.add_argument(
         "--provider",
         choices=["toy", "huggingface", "openai"],
-        help="Embedding provider (default: toy)",
+        required=True,
+        help="Embedding provider (required)",
         metavar="PROVIDER",
     )
     embed_parser.add_argument("--model", help="Model name (provider-specific)", metavar="MODEL")
@@ -602,10 +736,9 @@ def create_parser() -> argparse.ArgumentParser:
         help="🔍 Search documents with natural language",
         description="Query the database using semantic search.\n\n"
         "Examples:\n"
-        "  query --q 'civil war' --k 3\n"
-        "  query --q 'government policy' --json --provider toy",
+        "  query --provider openai --q 'civil war' --k 3\n"
+        "  query --provider toy --q 'government policy' --json",
     )
-    query_parser.add_argument("--db", help="Database path (default: rag.db)", metavar="PATH")
     query_parser.add_argument(
         "--q", required=True, help="Query text (natural language)", metavar="TEXT"
     )
@@ -613,7 +746,8 @@ def create_parser() -> argparse.ArgumentParser:
     query_parser.add_argument(
         "--provider",
         choices=["toy", "huggingface", "openai"],
-        help="Must match embedding provider",
+        required=True,
+        help="Embedding provider (must match embed step)",
         metavar="PROVIDER",
     )
     query_parser.add_argument("--json", action="store_true", help="Output as JSON instead of table")
@@ -626,11 +760,16 @@ def create_parser() -> argparse.ArgumentParser:
         help="🔬 Inspect database status or query results",
         description="Show database status (default) or run detailed query inspection with full content and metadata.",
     )
-    inspect_parser.add_argument("--db", help="Database path (default: rag.db)", metavar="PATH")
     inspect_parser.add_argument(
         "--q", help="Query text (optional - shows database status if omitted)", metavar="TEXT"
     )
     inspect_parser.add_argument("--k", type=int, help="Number of results (default: 5)", metavar="N")
+    inspect_parser.add_argument(
+        "--provider",
+        choices=["toy", "huggingface", "openai"],
+        help="Embedding provider (required for query inspection)",
+        metavar="PROVIDER",
+    )
     inspect_parser.add_argument("--json", action="store_true", help="Output as JSON")
     inspect_parser.add_argument(
         "--sanity",
@@ -639,13 +778,47 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     # tune command
-    tune_parser = ragdb_subparsers.add_parser(
+    ragdb_subparsers.add_parser(
         "tune",
         help="⚙️  Tune RAG parameters (coming soon)",
         description="Optimize chunking, embedding, and retrieval parameters.\n\n"
         "This feature will integrate with parameter tuning scripts.",
     )
-    tune_parser.add_argument("--db", help="Database path (default: rag.db)", metavar="PATH")
+
+    # answer command
+    answer_parser = ragdb_subparsers.add_parser(
+        "answer",
+        help="🤖 Generate natural language answers using RAG",
+        description="Complete RAG pipeline: retrieve relevant chunks and generate natural language answers.\n\n"
+        "Examples:\n"
+        "  answer --provider openai --q 'What is QMX?'\n"
+        "  answer --provider openai --q 'How does it work?' --model gpt-4 --json",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    answer_parser.add_argument(
+        "--q", required=True, help="Question (natural language)", metavar="TEXT"
+    )
+    answer_parser.add_argument(
+        "--k", type=int, help="Number of chunks to retrieve (default: 5)", metavar="N"
+    )
+    answer_parser.add_argument(
+        "--provider",
+        choices=["openai", "toy"],
+        required=True,
+        help="Provider for both embeddings and LLM (required)",
+        metavar="PROVIDER",
+    )
+    answer_parser.add_argument("--model", help="LLM model name", metavar="MODEL")
+    answer_parser.add_argument(
+        "--temperature", type=float, help="Temperature (0.0-1.0, default: 0.1)", metavar="TEMP"
+    )
+    answer_parser.add_argument(
+        "--max-tokens", type=int, help="Maximum tokens in response (default: 1000)", metavar="N"
+    )
+    answer_parser.add_argument("--json", action="store_true", help="Output as JSON")
+    answer_parser.add_argument(
+        "--verbose", action="store_true", help="Show additional context info"
+    )
 
     return parser
 
@@ -659,7 +832,7 @@ def main() -> int:
 
     # Check for common mistakes and provide helpful errors BEFORE parsing
     if len(sys.argv) > 1 and sys.argv[1] not in ["--debug-exec", "-h", "--help"]:
-        common_commands = ["init", "ingest", "embed", "query", "inspect", "tune"]
+        common_commands = ["init", "ingest", "embed", "query", "inspect", "answer", "tune"]
         if sys.argv[1] in common_commands:
             print(f"❌ Error: '{sys.argv[1]}' is not a top-level command.", file=sys.stderr)
             print(f"💡 Did you mean: qmx ragdb {sys.argv[1]} ?", file=sys.stderr)
@@ -704,6 +877,7 @@ def main() -> int:
             "embed": cli.cmd_embed,
             "query": cli.cmd_query,
             "inspect": cli.cmd_inspect,
+            "answer": cli.cmd_answer,
             "tune": cli.cmd_tune,
         }
 
