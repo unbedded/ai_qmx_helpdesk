@@ -343,16 +343,16 @@ class RagCLI:
             return 1
 
     def cmd_inspect(self, args: argparse.Namespace) -> int:
-        """Inspect query results or run database sanity check."""
+        """Inspect database status or query results."""
+        # If no query provided, show database status
+        if not args.q:
+            return self.cmd_sanity_check(args)
+
+        # If sanity flag is used, run sanity check
         if args.sanity:
             return self.cmd_sanity_check(args)
 
-        # Validate query is provided when not doing sanity check
-        if not args.q:
-            print("Error: --q (query) is required unless using --sanity", file=sys.stderr)
-            return 1
-
-        # Set detailed output flags
+        # Set detailed output flags for query inspection
         args.show_paths = True
         args.show_chunks = True
         return self.cmd_query(args)
@@ -616,11 +616,13 @@ def create_parser() -> argparse.ArgumentParser:
     # inspect command
     inspect_parser = ragdb_subparsers.add_parser(
         "inspect",
-        help="🔬 Detailed query inspection",
-        description="Like query but shows full content and metadata by default. Can also run database sanity checks.",
+        help="🔬 Inspect database status or query results",
+        description="Show database status (default) or run detailed query inspection with full content and metadata.",
     )
     inspect_parser.add_argument("--db", help="Database path", metavar="PATH")
-    inspect_parser.add_argument("--q", help="Query text (optional with --sanity)", metavar="TEXT")
+    inspect_parser.add_argument(
+        "--q", help="Query text (optional - shows database status if omitted)", metavar="TEXT"
+    )
     inspect_parser.add_argument("--k", type=int, help="Number of results (default: 5)", metavar="N")
     inspect_parser.add_argument("--json", action="store_true", help="Output as JSON")
     inspect_parser.add_argument(
