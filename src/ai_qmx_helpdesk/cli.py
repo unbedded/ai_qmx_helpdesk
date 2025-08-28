@@ -36,6 +36,9 @@ from . import rag_db
 # STEP_1: Setup logging and constants
 _logger = logging.getLogger(__name__)
 
+DEFAULT_GLOB_PATTERN = "**/*.{txt,pdf}"
+SUPPORTED_GLOB_PATTERNS = ["*.txt", "*.pdf", "**/*.txt", "**/*.pdf", "**/*.{txt,pdf}"]
+
 DEFAULT_CONFIG = {
     "data_dir": "~/sw/qmx_helpdesk/data/",
     "db": {"path": "rag.db", "backend": "faiss"},
@@ -144,7 +147,7 @@ class RagCLI:
         if not Path(data_dir).exists():
             print(f"❌ Error: Directory not found: {data_dir}", file=sys.stderr)
             return 1
-        glob_pattern = args.glob or "**/*.{txt,pdf}"
+        glob_pattern = args.glob or DEFAULT_GLOB_PATTERN
 
         print(f"[STEP_1] Ingesting documents from: {data_dir}")
         print(f"[STEP_2] Using pattern: {glob_pattern}")
@@ -550,15 +553,19 @@ def create_parser() -> argparse.ArgumentParser:
         "  *.pdf                - PDF files in current dir  \n"
         "  **/*.txt             - Text files in all subdirs\n"
         "  **/*.pdf             - PDF files in all subdirs\n"
-        "  **/*.{txt,pdf}       - Both types, all subdirs (default)\n\n"
+        f"  {DEFAULT_GLOB_PATTERN}       - Both types, all subdirs (default)\n\n"
         "Examples:\n"
         "  ingest --dir ./docs --glob '*.pdf'        # PDFs only\n"
         "  ingest --dir ./data --glob '**/*.txt'     # All txt files",
     )
-    ingest_parser.add_argument("--db", help="Database path", metavar="PATH")
-    ingest_parser.add_argument("--dir", help="Directory to scan for documents", metavar="PATH")
+    ingest_parser.add_argument("--db", help="Database path (default: rag.db)", metavar="PATH")
     ingest_parser.add_argument(
-        "--glob", help="File pattern (default: **/*.{txt,pdf})", metavar="PATTERN"
+        "--dir", help="Directory to scan for documents (searches recursively)", metavar="PATH"
+    )
+    ingest_parser.add_argument(
+        "--glob",
+        help=f"File pattern - supports {', '.join(SUPPORTED_GLOB_PATTERNS)} (default: {DEFAULT_GLOB_PATTERN})",
+        metavar="PATTERN",
     )
 
     # embed command
@@ -571,7 +578,7 @@ def create_parser() -> argparse.ArgumentParser:
         "  huggingface - High quality open-source models\n"
         "  openai      - OpenAI's embedding models (requires API key)",
     )
-    embed_parser.add_argument("--db", help="Database path", metavar="PATH")
+    embed_parser.add_argument("--db", help="Database path (default: rag.db)", metavar="PATH")
     embed_parser.add_argument(
         "--provider",
         choices=["toy", "huggingface", "openai"],
@@ -598,7 +605,7 @@ def create_parser() -> argparse.ArgumentParser:
         "  query --q 'civil war' --k 3\n"
         "  query --q 'government policy' --json --provider toy",
     )
-    query_parser.add_argument("--db", help="Database path", metavar="PATH")
+    query_parser.add_argument("--db", help="Database path (default: rag.db)", metavar="PATH")
     query_parser.add_argument(
         "--q", required=True, help="Query text (natural language)", metavar="TEXT"
     )
@@ -619,7 +626,7 @@ def create_parser() -> argparse.ArgumentParser:
         help="🔬 Inspect database status or query results",
         description="Show database status (default) or run detailed query inspection with full content and metadata.",
     )
-    inspect_parser.add_argument("--db", help="Database path", metavar="PATH")
+    inspect_parser.add_argument("--db", help="Database path (default: rag.db)", metavar="PATH")
     inspect_parser.add_argument(
         "--q", help="Query text (optional - shows database status if omitted)", metavar="TEXT"
     )
@@ -638,7 +645,7 @@ def create_parser() -> argparse.ArgumentParser:
         description="Optimize chunking, embedding, and retrieval parameters.\n\n"
         "This feature will integrate with parameter tuning scripts.",
     )
-    tune_parser.add_argument("--db", help="Database path", metavar="PATH")
+    tune_parser.add_argument("--db", help="Database path (default: rag.db)", metavar="PATH")
 
     return parser
 
