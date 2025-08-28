@@ -1,0 +1,17 @@
+# Optional dependencies for enhanced functionality
+# Install with: pip install -r requirements-optional.txt
+
+# HuggingFace embeddings support (large download ~2GB with PyTorch)
+sentence-transformers>=2.0.0
+
+# Additional LLM providers (if needed)
+# anthropic>=0.25.0  # For Claude models  
+# openai>=1.0.0      # For OpenAI models
+
+# GPU acceleration (if available)
+# torch-audio>=2.0.0  # Audio processing
+# torch-vision>=0.15.0  # Image processing
+
+# Alternative vector stores
+# pinecone-client>=2.0.0  # Pinecone vector database
+# weaviate-client>=3.0.0  # Weaviate vector database
