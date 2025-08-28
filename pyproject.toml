@@ -1,3 +1,12 @@
+[project]
+name = "ai_qmx_helpdesk"
+version = "0.1.0"
+description = "AI QMX Helpdesk with RAG database functionality"
+requires-python = ">=3.11"
+
+[project.scripts]
+qmx = "ai_qmx_helpdesk.cli:main"
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 

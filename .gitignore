@@ -219,3 +219,5 @@ rag.db/**
 __pycache__/
 *.pyc
 .cache/
+*.db
+*_index/

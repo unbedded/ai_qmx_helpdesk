@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 ### Added
 - Added: rag_db (LangChain-based RAG store and retriever)
+- Added: ragdb CLI (command-line interface for RAG database operations)
 
 ### Changed
 - 

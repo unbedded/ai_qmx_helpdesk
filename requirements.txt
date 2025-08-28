@@ -1,20 +1,30 @@
+# Development and testing
 pytest>=8.0
 ruff>=0.5
 mypy>=1.10
-PyYAML>=6.0
-types-PyYAML>=6.0.12.20240808
+
+# Configuration file support  
+tomli>=2.0.0  # TOML parsing for Python < 3.11 (3.11+ has built-in tomllib)
 
 # LangChain dependencies for RAG database functionality
 langchain>=0.1.0
 langchain-community>=0.0.20
 langchain-core>=0.1.0
+langchain-text-splitters>=0.0.1
 langchain-openai>=0.1.0
 langchain-anthropic>=0.1.0
 langchain-huggingface>=0.0.1
+
+# Embedding providers (optional - only needed if using HuggingFace)  
+# sentence-transformers>=2.0.0  # For HuggingFace embeddings (large download ~2GB with PyTorch)
 
 # Vector store backends
 faiss-cpu>=1.7.0
 chromadb>=0.4.0
 
-# Text processing
+# Document processing
 pypdf>=4.0.0
+
+# Optional type stubs (for development)
+PyYAML>=6.0  # May be used in future for YAML config
+types-PyYAML>=6.0.12.20240808

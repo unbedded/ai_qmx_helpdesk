@@ -16,6 +16,9 @@ from .rag_db import (
     RagDB,
 )
 
+# Import CLI main function for public API
+from .cli import main as cli_main
+
 __all__: list[str] = [
     "init_db",
     "ingest_path",
@@ -24,5 +27,6 @@ __all__: list[str] = [
     "build_chain",
     "ask",
     "RagDB",
+    "cli_main",
 ]
 __version__ = "0.1.0"

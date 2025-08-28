@@ -43,7 +43,7 @@ from .config_manager import ConfigManager
 
 # STEP_1: Define default configuration and constants
 DEFAULT_CONFIG = {
-    "db": {"path": "rag.db", "backend": "faiss", "persist_dir": "rag.db/index"},
+    "db": {"path": "rag.db", "backend": "faiss", "persist_dir": "rag_index"},
     "ingest": {"data_dir": "./data", "glob": "**/*.{txt,pdf}", "pdf_ocr": False},
     "split": {"splitter": "recursive_character", "chunk_size": 1000, "chunk_overlap": 200},
     "embed": {
@@ -79,8 +79,73 @@ CREATE TABLE IF NOT EXISTS chunks (
 )
 """
 
+CREATE_EMBEDDINGS_TABLE = """
+CREATE TABLE IF NOT EXISTS embeddings_info (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    dimensions INTEGER,
+    total_vectors INTEGER NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    config TEXT
+)
+"""
+
 CREATE_INDEX_DOC_PATH = "CREATE INDEX IF NOT EXISTS idx_doc_path ON documents(path)"
 CREATE_INDEX_CHUNK_DOC = "CREATE INDEX IF NOT EXISTS idx_chunk_doc ON chunks(doc_id, seq)"
+
+
+def _record_embedding_info(
+    db_path: str, embed_cfg: Dict[str, Any], backend: str, chunk_count: int, vectorstore: Any = None
+) -> None:
+    """
+    Record embedding provider information in database.
+
+    STEP_11: Embedding metadata tracking
+
+    Args:
+        db_path: Path to database file
+        embed_cfg: Embedding configuration
+        backend: Vector store backend (faiss/chroma)
+        chunk_count: Number of vectors created
+        vectorstore: Optional vector store instance for dimension detection
+    """
+    try:
+        # Try to detect embedding dimensions
+        dimensions = None
+        if hasattr(vectorstore, "index") and hasattr(vectorstore.index, "d"):
+            # FAISS index dimension
+            dimensions = vectorstore.index.d
+        elif embed_cfg.get("provider") == "toy":
+            dimensions = 384  # ToyEmbeddings default
+
+        with _get_db_connection(db_path) as conn:
+            # Clear existing embedding info (only keep latest)
+            conn.execute("DELETE FROM embeddings_info")
+
+            # Insert new embedding info
+            conn.execute(
+                """
+                INSERT INTO embeddings_info (provider, model, dimensions, total_vectors, config)
+                VALUES (?, ?, ?, ?, ?)
+            """,
+                (
+                    embed_cfg.get("provider", "unknown"),
+                    embed_cfg.get("model", "default"),
+                    dimensions,
+                    chunk_count,
+                    json.dumps({"backend": backend, "embed_cfg": embed_cfg}),
+                ),
+            )
+            conn.commit()
+            _logger.info(
+                "Recorded embedding info: %s/%s, %d vectors",
+                embed_cfg.get("provider"),
+                embed_cfg.get("model"),
+                chunk_count,
+            )
+    except Exception as e:
+        _logger.warning("Failed to record embedding info: %s", str(e))
 
 
 def _setup_logging() -> logging.Logger:
@@ -148,19 +213,15 @@ def init_db(db_path: str) -> None:
         with _get_db_connection(db_path) as conn:
             conn.execute(CREATE_DOCUMENTS_TABLE)
             conn.execute(CREATE_CHUNKS_TABLE)
+            conn.execute(CREATE_EMBEDDINGS_TABLE)
             conn.execute(CREATE_INDEX_DOC_PATH)
             conn.execute(CREATE_INDEX_CHUNK_DOC)
             conn.commit()
 
         # Create vector store directory
-        config = DEFAULT_CONFIG.copy()
-        db_config: Dict[str, Any] = config["db"]  # type: ignore[assignment]
-        persist_dir = db_config["persist_dir"]
-        index_dir = Path(persist_dir)
-        default_path = db_config["path"]
-        if not Path(db_path).name == Path(default_path).name:
-            # Adjust index directory for custom db path
-            index_dir = Path(db_path).parent / "index"
+        # Use db_path stem (filename without extension) + '_index' as directory name
+        db_stem = Path(db_path).stem  # e.g. 'rag' from 'rag.db'
+        index_dir = Path(db_path).parent / f"{db_stem}_index"
 
         index_dir.mkdir(parents=True, exist_ok=True)
 
@@ -266,8 +327,12 @@ def ingest_path(db_path: str, data_dir: str, glob_pattern: str = "**/*.{txt,pdf}
         with _get_db_connection(db_path) as conn:
             cursor = conn.cursor()
 
-            # Find files matching pattern
-            files = list(data_path.glob(glob_pattern))
+            # Find files matching pattern - handle brace expansion manually
+            if glob_pattern == "**/*.{txt,pdf}":
+                # Default pattern - expand manually since Python glob doesn't support brace expansion
+                files = list(data_path.glob("**/*.txt")) + list(data_path.glob("**/*.pdf"))
+            else:
+                files = list(data_path.glob(glob_pattern))
             _logger.info("Found %d files matching pattern", len(files))
 
             for file_path in files:
@@ -306,12 +371,27 @@ def ingest_path(db_path: str, data_dir: str, glob_pattern: str = "**/*.{txt,pdf}
                         _logger.warning("No content loaded from: %s", file_path)
                         continue
 
-                    # Process document
-                    doc_content = documents[0].page_content
-                    doc_metadata = documents[0].metadata
-                    doc_metadata.update(
-                        {"path": str(file_path), "mtime": file_mtime, "bytes": file_size}
-                    )
+                    # Process document - combine all pages for PDFs
+                    if len(documents) > 1:
+                        # Multi-page document (PDF) - combine all pages
+                        doc_content = "\n\n".join(doc.page_content for doc in documents)
+                        doc_metadata = documents[0].metadata  # Use metadata from first page
+                        doc_metadata.update(
+                            {
+                                "path": str(file_path),
+                                "mtime": file_mtime,
+                                "bytes": file_size,
+                                "pages": len(documents),
+                            }
+                        )
+                        _logger.info("Combined %d pages for: %s", len(documents), file_path.name)
+                    else:
+                        # Single page/document (TXT)
+                        doc_content = documents[0].page_content
+                        doc_metadata = documents[0].metadata
+                        doc_metadata.update(
+                            {"path": str(file_path), "mtime": file_mtime, "bytes": file_size}
+                        )
 
                     # Delete existing record if updating
                     if existing:
@@ -413,6 +493,10 @@ class ToyEmbeddings:
         self.model = model
         self.dimension = 384  # Match common embedding dimensions
 
+    def __call__(self, text: str) -> List[float]:
+        """Make the class callable for FAISS compatibility."""
+        return self.embed_query(text)
+
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         """Embed multiple documents."""
         return [self.embed_query(text) for text in texts]
@@ -499,15 +583,17 @@ def build_embeddings(db_path: str, cfg: Dict[str, Any]) -> int:
                 vectorstore: Any = FAISS.from_texts(texts, embeddings, metadatas=metadatas)
 
                 # Save to disk
-                persist_dir = db_cfg.get("persist_dir", "rag.db/index")
-                if not Path(db_path).name == "rag.db":
-                    # Adjust persist directory for custom db path
-                    persist_dir = Path(db_path).parent / "index"
+                # Use db_path stem + '_index' as directory name
+                db_stem = Path(db_path).stem
+                persist_dir = Path(db_path).parent / f"{db_stem}_index"
 
                 Path(persist_dir).mkdir(parents=True, exist_ok=True)
                 vectorstore.save_local(str(persist_dir))
 
                 _logger.info("FAISS index saved to: %s", persist_dir)
+
+                # Record embedding provider info
+                _record_embedding_info(db_path, embed_cfg, backend, chunk_count, vectorstore)
 
             except ImportError as e:
                 raise ImportError(f"FAISS backend unavailable: {e}") from e
@@ -516,9 +602,9 @@ def build_embeddings(db_path: str, cfg: Dict[str, Any]) -> int:
             try:
                 from langchain_community.vectorstores import Chroma
 
-                persist_dir = db_cfg.get("persist_dir", "rag.db/index")
-                if not Path(db_path).name == "rag.db":
-                    persist_dir = Path(db_path).parent / "index"
+                # Use db_path stem + '_index' as directory name
+                db_stem = Path(db_path).stem
+                persist_dir = Path(db_path).parent / f"{db_stem}_index"
 
                 vectorstore = Chroma.from_texts(
                     texts, embeddings, metadatas=metadatas, persist_directory=str(persist_dir)
@@ -526,6 +612,9 @@ def build_embeddings(db_path: str, cfg: Dict[str, Any]) -> int:
                 vectorstore.persist()
 
                 _logger.info("Chroma index saved to: %s", persist_dir)
+
+                # Record embedding provider info
+                _record_embedding_info(db_path, embed_cfg, backend, chunk_count, vectorstore)
 
             except ImportError as e:
                 raise ImportError(f"Chroma backend unavailable: {e}") from e
@@ -562,9 +651,9 @@ def _load_vectorstore(db_path: str, cfg: Dict[str, Any]) -> Any:
     embeddings = make_embeddings(embed_cfg)
 
     # Determine persist directory
-    persist_dir = db_cfg.get("persist_dir", "rag.db/index")
-    if not Path(db_path).name == "rag.db":
-        persist_dir = Path(db_path).parent / "index"
+    # Use db_path stem + '_index' as directory name
+    db_stem = Path(db_path).stem
+    persist_dir = Path(db_path).parent / f"{db_stem}_index"
 
     if backend == "faiss":
         try:
@@ -939,10 +1028,9 @@ class RagDB:
                 chunk_count = cursor.fetchone()["chunk_count"]
 
                 # Check if vector index exists
-                db_cfg = self._config.get_cfg().get("db", {})
-                persist_dir = db_cfg.get("persist_dir", "rag.db/index")
-                if not Path(self._db_path).name == "rag.db":
-                    persist_dir = Path(self._db_path).parent / "index"
+                # Use db_path stem + '_index' as directory name
+                db_stem = Path(self._db_path).stem
+                persist_dir = Path(self._db_path).parent / f"{db_stem}_index"
 
                 index_exists = Path(persist_dir).exists()
 
